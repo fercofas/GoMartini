@@ -1,3 +1,5 @@
+// contact_map.c  — sparse counters version for large assemblies
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -5,312 +7,346 @@
 #include <float.h>
 #include <assert.h>
 #include <math.h>
+#include <limits.h>
+#include <stdint.h>
+
 #include "contact_map.h"
 
-// GLOBAL VARIABLES
+// GLOBALS
 pdb_str        *pdb      = NULL;
 atomaux_str    *atomauxs = NULL;
 residue_str    *residues = NULL;
 surface_str    *surface  = NULL;
 
-#define string_zeroing(T, a, n) do { \
-	T *b = (a);                  \
-	size_t m = (n);              \
-	for (;m>0;--m,++b) *b=(T){0};\
-} while (0)
-
-bool string_ncopy(char * destination, const char *source, size_t num) {
-	if (destination == NULL) return false;
-	char *ptr = destination;
-	while(*source && num--) { *ptr = *source; ptr++; source++; }
-	return true;
-}
-
-void make_surface(surface_str *surf, float3 c,int fiba,int fibb,float vrad) {
-	float x=c.x,y=c.y,z=c.z;
-	int phi_aux = 0;
-	for(int k=0; k<fibb; k++){
-		surface_str * s = surf + k;
-
-		// INITIALIZE
-		s->i = -1;
-	      	s->j = -1;
-		s->d = FLT_MAX;
-
-		phi_aux += fiba;
-		if(phi_aux > fibb) phi_aux = phi_aux - fibb;
-
-		// POINT
-		float theta = acos(1.0-2.0*k/fibb);
-		float phi   = 2.0*M_PI*phi_aux/fibb;
-		s->x = x + vrad*sin(theta)*cos(phi);
-		s->y = y + vrad*sin(theta)*sin(phi);
-		s->z = z + vrad*cos(theta);
-	}
-}
+// ---------- small helpers ----------
 
 float dist(float3 c1,float3 c2) {
-	float x1=c1.x,y1=c1.y,z1=c1.z;
-	float x2=c2.x,y2=c2.y,z2=c2.z;
-	float dx=(x2-x1),dy=(y2-y1),dz=(z2-z1);
-	return sqrtf(dx*dx + dy*dy + dz*dz);
+    float dx = c2.x - c1.x, dy = c2.y - c1.y, dz = c2.z - c1.z;
+    return sqrtf(dx*dx + dy*dy + dz*dz);
 }
 
+static void make_surface(surface_str *surf, float3 c,int fiba,int fibb,float vrad) {
+    int phi_aux = 0;
+    for(int k=0; k<fibb; k++){
+        surface_str * s = surf + k;
 
-// USEFUL GET FUNCTIONS
+        s->i = -1; s->j = -1; s->d = FLT_MAX;
+
+        phi_aux += fiba;
+        if(phi_aux > fibb) phi_aux -= fibb;
+
+        float theta = acosf(1.0f - 2.0f*k/(float)fibb);
+        float phi   = 2.0f*(float)M_PI*phi_aux/(float)fibb;
+        s->x = c.x + vrad*sinf(theta)*cosf(phi);
+        s->y = c.y + vrad*sinf(theta)*sinf(phi);
+        s->z = c.z + vrad*cosf(theta);
+    }
+}
+
+// ---------- getters over your structs ----------
+
 float3 SURFACE_COORDINATES(int k) {
-	surface_str *s = surface + k;
-	float3 r = {s->x,s->y,s->z};
-	return r;
+    surface_str *s = surface + k;
+    float3 r = {s->x,s->y,s->z};
+    return r;
 }
 float3 RESIDUE_CENTER_OF_MASS(int i) {
-	// RESIDUE CENTER OF MASS
-	residue_str *res = residues+i;
-	float3 rc = {res->x,res->y,res->z};
-	return rc;
+    residue_str *res = residues+i;
+    float3 rc = {res->x,res->y,res->z};
+    return rc;
 }
 float RESIDUE_RADIUS(int i) {
-	residue_str *res = residues+i;
-	return res->rad;
+    return residues[i].rad;
 }
 float3 ATOM_COORDINATES(int i,int j) {
-	residue_str *res = residues+i;
-	atom_pdb_str *a = res->a;
-	assert(j>=0 && j<res->n);
-	a = a+j;
-	float3 c = {a->x,a->y,a->z};
-	return c;
+    residue_str *res = residues+i;
+    atom_pdb_str *a = res->a + j;
+    float3 c = {a->x,a->y,a->z};
+    return c;
 }
 int ATOM_INDEX(int i1,int j1) {
-	residue_str * res1 = residues+i1;
-	atom_pdb_str *a1 = res1->a;
-	atom_pdb_str * atom1 = a1+j1;
-	ptrdiff_t k1 = atom1 - pdb->atoms;
-	return k1;
+    residue_str * res1 = residues+i1;
+    atom_pdb_str * atom1 = res1->a + j1;
+    return (int)(atom1 - pdb->atoms);
 }
 float vdW_RADIUS(int i1,int j1) {
-	residue_str * res1 = residues+i1;
-	atom_pdb_str *a1 = res1->a;
-	atom_pdb_str * atom1 = a1+j1;
-	ptrdiff_t k1 = atom1 - pdb->atoms;
-	atomaux_str *aux1 = atomauxs + k1;
-	return aux1->vrad;
+    int k = ATOM_INDEX(i1,j1);
+    return atomauxs[k].vrad;
+}
+int BASES_IN_RESIDUE(int i1) {
+    return residues[i1].n;
 }
 
-int BASES_IN_RESIDUE(int i1) {
-	residue_str * res1=residues + i1;
-	int n1 = res1->n;
-	return n1;
+static float DISTANCE_C_ALPHA(int i1,int i2) {
+    // Legacy heuristic: CA is the second atom. Works for standard protein PDB/mmCIF.
+    int j1=1,j2=1;
+    return dist(ATOM_COORDINATES(i1,j1),ATOM_COORDINATES(i2,j2));
 }
+
+// ---------- build residues and aux ----------
 
 void init_atomauxs_and_residues() {
-	int resCount = -1;
-	int resSeq = -1;
-	for (int k=0;k<pdb->natoms;k++) {
-		atom_pdb_str * atom = pdb->atoms + k;
-		// new residue
-		if (resSeq != atom->resSeq) {
-			resSeq = atom->resSeq;
-			resCount++;
-			residue_str * res = residues + resCount;
-			res->a = atom;
-			strncpy(res->name,atom->resName,4);
-			res->seq = atom->resSeq;
-			strncpy(res->chain,atom->chainID,1);
-			res->model = atom->model;
-		}
+    int   resCount  = -1;
+    int   lastResSeq = INT_MIN;
+    int   lastModel  = INT_MIN;
+    char  lastChain[8] = {0};
+    char  lastICode = '\0';
 
-		// init aux
-		atomaux_str * aux = atomauxs + k;
-		protein_map(atom,aux);
+    for (int k=0;k<pdb->natoms;k++) {
+        atom_pdb_str * atom = pdb->atoms + k;
 
-		// print info
-		//printf("%4s %4d | ",atom->resName,aux->keyresidue);
-		//printf("%4s %4d | ",atom->name,aux->keyatom);
-		//printf("%2d %4.2f %2d | ",aux->nb,aux->vrad,aux->atype);
-		//printf("%5d | ",k+1); print_atom(atom);
+        bool newResidue =
+            (resCount < 0) ||
+            (atom->model != lastModel) ||
+            (strcmp(atom->chainID, lastChain) != 0) ||
+            (atom->resSeq != lastResSeq) ||
+            (atom->iCode[0] != lastICode);
 
-		// init residue
-		residue_str * res = residues + resCount;
-		res->n++;
-		res->x += atom->x;
-		res->y += atom->y;
-		res->z += atom->z;
-	}
-	assert(resCount+1 == pdb->nresidues);
-	// CENTROID
-	for (int k=0; k<pdb->nresidues; k++) {
-		residue_str * res = residues + k;
-		res->x /= res->n;
-		res->y /= res->n;
-		res->z /= res->n;
-	}
+        if (newResidue) {
+            lastModel  = atom->model;
+            lastResSeq = atom->resSeq;
+            strncpy(lastChain, atom->chainID, sizeof(lastChain)-1);
+            lastICode = atom->iCode[0];
+
+            resCount++;
+            residue_str * res = residues + resCount;
+            memset(res, 0, sizeof(*res));
+            res->a = atom;
+            strncpy(res->name,  atom->resName, sizeof(res->name)-1);
+            res->seq   = atom->resSeq;
+            strncpy(res->chain, atom->chainID, sizeof(res->chain)-1);
+            res->model = atom->model;
+        }
+
+        atomaux_str * aux = atomauxs + k;
+        protein_map(atom,aux);
+
+        residue_str * res = residues + resCount;
+        res->n++;
+        res->x += atom->x;
+        res->y += atom->y;
+        res->z += atom->z;
+    }
+    assert(resCount+1 == pdb->nresidues);
+
+    for (int k=0; k<pdb->nresidues; k++) {
+        residue_str * res = residues + k;
+        res->x /= res->n;
+        res->y /= res->n;
+        res->z /= res->n;
+    }
 }
 
-float DISTANCE_C_ALPHA(int i1,int i2) {
-	// C-ALPHA DISTANCES
-	int j1=1,j2=1; // C-ALPHA IS GIVEN AS THE SECOND ATOM OF A RESIDUES IN PDB
-	return dist(ATOM_COORDINATES(i1,j1),ATOM_COORDINATES(i2,j2));
+// ---------- sparse counters for (i1,i2) ----------
+
+typedef struct {
+    uint64_t key;  // ((uint64_t)i1 << 32) | (uint64_t)i2
+    int over;
+    int cont;
+    int stab;
+    int dest;
+} PairCount;
+
+typedef struct {
+    size_t cap;   // power of two
+    size_t used;
+    PairCount *a; // open addressing
+} CounterMap;
+
+static const uint64_t EMPTY_KEY = UINT64_MAX;
+
+static uint64_t mix64(uint64_t x){
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+static size_t next_pow2(size_t v){
+    if (v < 2) return 2;
+    v--;
+    for (size_t i=1;i<sizeof(size_t)*8;i<<=1) v |= v>>i;
+    return v+1;
+}
+static void cmap_init(CounterMap *m, size_t hint){
+    m->cap = next_pow2(hint*2 + 1024);
+    m->used = 0;
+    m->a = (PairCount*)malloc(m->cap * sizeof(PairCount));
+    if (!m->a) { m->cap=0; return; }
+    for (size_t i=0;i<m->cap;i++){ m->a[i].key = EMPTY_KEY; m->a[i].over=m->a[i].cont=m->a[i].stab=m->a[i].dest=0; }
+}
+static void cmap_free(CounterMap *m){
+    free(m->a); m->a=NULL; m->cap=m->used=0;
+}
+static PairCount *cmap_find_slot(CounterMap *m, uint64_t key){
+    size_t mask = m->cap - 1;
+    size_t i = (size_t)(mix64(key) & mask);
+    for (;;){
+        if (m->a[i].key == EMPTY_KEY) return &m->a[i];
+        if (m->a[i].key == key) return &m->a[i];
+        i = (i + 1) & mask;
+    }
+}
+static bool cmap_rehash(CounterMap *m, size_t newcap){
+    PairCount *old = m->a;
+    size_t oldcap = m->cap;
+    m->a = (PairCount*)malloc(newcap * sizeof(PairCount));
+    if (!m->a) { m->a = old; return false; }
+    m->cap = newcap; m->used = 0;
+    for (size_t i=0;i<m->cap;i++){ m->a[i].key = EMPTY_KEY; m->a[i].over=m->a[i].cont=m->a[i].stab=m->a[i].dest=0; }
+    for (size_t i=0;i<oldcap;i++){
+        if (old[i].key != EMPTY_KEY){
+            PairCount *s = cmap_find_slot(m, old[i].key);
+            *s = old[i];
+            m->used++;
+        }
+    }
+    free(old);
+    return true;
+}
+static PairCount *cmap_get(CounterMap *m, int i1, int i2){
+    uint64_t key = ((uint64_t)(uint32_t)i1 << 32) | (uint64_t)(uint32_t)i2;
+    if (m->cap == 0) return NULL;
+    PairCount *s = cmap_find_slot(m, key);
+    if (s->key == EMPTY_KEY){
+        s->key = key;
+        s->over = s->cont = s->stab = s->dest = 0;
+        m->used++;
+        if (m->used * 10 > m->cap * 7) {
+            cmap_rehash(m, m->cap ? m->cap*2 : 2048);
+        }
+    }
+    return s;
 }
 
-/*
-void printA(int i1, int j1, int i2, int j2) {
-	int k1 = ATOM_INDEX(i1,j1);
-	int k2 = ATOM_INDEX(i2,j2);
-	float d = dist(ATOM_COORDINATES(i1,j1),ATOM_COORDINATES(i2,j2));
-	int t1 = atomauxs[k1].atype, t2 = atomauxs[k2].atype;
-	printf("A%5d  %3s   %1s %-3s %2d"
-               " %5d  %3s   %1s %-3s %2d"
-               "    %2d   %8.4f\n"
-        ,pdb->atoms[k1].resSeq,pdb->atoms[k1].resName,pdb->atoms[k1].chainID,pdb->atoms[k1].name,t1,
-	 pdb->atoms[k2].resSeq,pdb->atoms[k2].resName,pdb->atoms[k2].chainID,pdb->atoms[k2].name,t2,
-	BONDTYPE(t1,t2), d
-);
-}
-*/
-/*
-printf("\n\n"
-"Atom  - Atom contacts\n"
-"I1,I2 - id of residues in contact\n"
-"A1,A2 - names of atoms in contact\n"
-"C     - chain\n"
-"T     - id of atom class\n"
-"I     - id of interaction type\n"
-"Surf  - surface of interaction in CSU algorithm\n"
-"S0    - whole surface of overlap in CSU algorithm\n"
-"Cont  - number of contacts between atoms\n"
-"    I1  AA    C A1   T    I2  AA    C A2   T     I   DISTANCE       Surf      S0    Cont\n"
-"========================================================================================\n"
-);
-*/
+// ---------- main ----------
+
 int main (int argc,char **argv) {
-	printf(
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <pdb|cif>\n", argv[0]);
+        return 1;
+    }
+
+    printf(
 "                         CONTACT MAPS FROM PDB FILES                          \n"
-"                                                                              \n"
-" This software is written by:                                                 \n"
-"       Rodrigo Azevedo Moreira da Silva                                       \n"
-"                                                                              \n"
-" Copyright (c) 2020 - IPPT-PAN                                                \n"
-"       Institute of Fundamental Techonological Research                       \n"
-"       Polish Academy of Sciences                                             \n"
-" MIT LICENSE, check out LICENSE for more informations.                        \n"
-"                                                                              \n"
-        );
+"\n"
+" This software is written by:\n"
+"       Rodrigo Azevedo Moreira da Silva\n"
+"\n"
+" Copyright (c) 2020 - IPPT-PAN\n"
+"       Institute of Fundamental Techonological Research\n"
+"       Polish Academy of Sciences\n"
+" MIT LICENSE, check out LICENSE for more informations.\n"
+"\n"
+    );
 
+    printf("Reading file:    %s\n",argv[1]);
 
-	size_t size_pdb = sizeof(pdb_str) + 100000*sizeof(atom_pdb_str);
+    // read structure into heap block
+    pdb = read_structure_alloc(argv[1]);
+    if (!pdb) {
+        fprintf(stderr, "Could not read structure: %s\n", argv[1]);
+        return 1;
+    }
+    int natoms    = pdb->natoms;
+    int nresidues = pdb->nresidues;
+    printf("pdb natoms:      %d\n",natoms);
+    printf("pdb nresidues:   %d\n",nresidues);
 
-	printf("Reading file:    %s\n",argv[1]);
+    // AUX ARRAYS
+    atomauxs = (atomaux_str*)calloc((size_t)natoms,sizeof(atomaux_str));
+    residues = (residue_str*)calloc((size_t)nresidues,sizeof(residue_str));
+    if (!atomauxs || !residues) {
+        fprintf(stderr, "Out of memory for auxiliaries\n");
+        return 2;
+    }
+    init_atomauxs_and_residues();
 
-	// ALOCATING MEMORY TO PDB FILE
+    // Fibonacci grid for surface sampling
+    int fib = 14, fiba = 0, fibb = 1;
+    for (int f=0;f<fib;f++) { int fibc=fiba+fibb; fiba=fibb; fibb=fibc; }
 
-	pdb = (pdb_str *)malloc(size_pdb);
-	assert(pdb != NULL);
-	memset(pdb,0,size_pdb);
+    surface = (surface_str*)calloc((size_t)fibb,sizeof(surface_str));
+    if (!surface) { fprintf(stderr,"Out of memory for surface\n"); return 2; }
+    printf("Fibonacci grid:  %d\n",fibb);
 
-	// READ PDB "ATOM" INFO
-	read_pdb(argv[1],pdb);
-	int natoms = pdb->natoms;
-	int nresidues = pdb->nresidues;
-	printf("pdb natoms:      %d\n",natoms);
-	printf("pdb nresidues:   %d\n",nresidues);
+    // MODEL PARAMETERS
+    float alpha        = 1.24f;
+    float water_radius = 2.80f;
+    printf("ALPHA:        %7.2f\n",alpha);
+    printf("WATER_RADIUS: %7.2f\n",water_radius);
 
-	printf("Memory usage:  %7.2f MB\n",(
-		size_pdb +
-		natoms*sizeof(atomaux_str) +
-		nresidues*sizeof(residue_str) +
-		nresidues*nresidues*sizeof(int) * 4
-		)/(1024.0*1024.0));
+    // Sparse counters
+    CounterMap cmap;
+    // heuristic: ~64 neighbors per residue
+    size_t hint_pairs = (size_t)nresidues * 64u;
+    cmap_init(&cmap, hint_pairs);
+    if (!cmap.a) { fprintf(stderr, "Out of memory for counters\n"); return 2; }
 
-	// AUXILIARY STRUCTURES
-	atomauxs = (atomaux_str*)calloc(natoms,sizeof(atomaux_str));    assert(atomauxs != NULL);
-	residues = (residue_str*)calloc(nresidues,sizeof(residue_str)); assert(residues != NULL);
-	init_atomauxs_and_residues();
+    // CONTACTS
+    for(int i1=0; i1 < nresidues; i1++) {
+        for(int j1=0; j1 < BASES_IN_RESIDUE(i1); j1++) {
+            make_surface(surface, ATOM_COORDINATES(i1,j1), fiba, fibb, vdW_RADIUS(i1,j1)+water_radius);
 
-	// FIBONACCI
-	int fib = 14, fiba = 0, fibb = 1;
-	for (int f=0;f<fib;f++) { int fibc=fiba+fibb; fiba=fibb; fibb=fibc; }
+            for(int i2=0; i2 < nresidues; i2++) {
+                if (residues[i1].model != residues[i2].model) continue;
+                // coarse filter on residue COM distance
+                if (dist(RESIDUE_CENTER_OF_MASS(i1),RESIDUE_CENTER_OF_MASS(i2)) > 14.0f) continue;
 
-	surface = (surface_str*)calloc(fibb,sizeof(surface_str));
-	printf("Fibonacci grid:  %d\n",fibb);
+                for(int j2=0; j2 < BASES_IN_RESIDUE(i2); j2++) {
+                    if (i1==i2 && j1==j2) continue;
 
-	int * overlapcounter      = (int *)calloc(nresidues*nresidues,sizeof(int)); assert(overlapcounter);
-	int * contactcounter      = (int *)calloc(nresidues*nresidues,sizeof(int)); assert(contactcounter);
-	int * stabilizercounter   = (int *)calloc(nresidues*nresidues,sizeof(int)); assert(stabilizercounter);
-	int * destabilizercounter = (int *)calloc(nresidues*nresidues,sizeof(int)); assert(destabilizercounter);
-	//float scmap[pdb->nresidues][pdb->nresidues][MAXBONDTYPE];
+                    float distance = dist(ATOM_COORDINATES(i1,j1),ATOM_COORDINATES(i2,j2));
 
-	// MODEL VARIABLES
-	float alpha        = 1.24; // ENLARGMENT FACTOR TO ACCCOUNT ATTRACTION EFFECTS
-	float water_radius = 2.80; // RADIUS OF WATER MOLECULE
-	printf("ALPHA:        %7.2f\n",alpha);
-	printf("WATER_RADIUS: %7.2f\n",water_radius);
+                    PairCount *pc = NULL;
 
-	// MAKE CONTACT LIST
-	for(unsigned int i1=0; i1 < nresidues; i1++) {
-	for(unsigned int j1=0; j1 < BASES_IN_RESIDUE(i1); j1++) {
-		// INITIALIZE AND MAKE SURFACE
-		make_surface(surface,ATOM_COORDINATES(i1,j1),fiba,fibb,vdW_RADIUS(i1,j1)+water_radius);
+                    // OV criterion
+                    if(distance <= ((vdW_RADIUS(i1,j1)+vdW_RADIUS(i2,j2))*alpha)) {
+                        if (!pc) pc = cmap_get(&cmap, i1, i2);
+                        if (pc) pc->over = 1;
+                    }
 
-		// FIND NEIGHBORS OF i1 j1
-		for(unsigned int i2=0; i2 < nresidues; i2++) {
-		// CHECK RESIDUES CONTACT AND ON THE SAME MODEL
-		if (
-			(residues[i1].model == residues[i2].model) &&
-			(dist(RESIDUE_CENTER_OF_MASS(i1),RESIDUE_CENTER_OF_MASS(i2)) <= 3.5*4) // roughly one aminoacid = 3.5A
-		) {
-		for(unsigned int j2=0; j2 < BASES_IN_RESIDUE(i2); j2++) {
-		// CHECK NOT THE SAME CENTER
-		if (!(i1==i2 && j1==j2)) {
+                    // CSU coverage, plus stabilize/destabilize classification
+                    if (distance <= vdW_RADIUS(i1,j1)+vdW_RADIUS(i2,j2)+water_radius) {
+                        for (int k=0; k<fibb; k++) {
+                            surface_str * s = surface + k;
+                            if( dist(SURFACE_COORDINATES(k), ATOM_COORDINATES(i2,j2)) < vdW_RADIUS(i2,j2)+water_radius
+                                && distance <= s->d) {
+                                s->d = distance; s->i = i2; s->j = j2;
+                            }
+                        }
+                    }
 
-			float distance = dist(ATOM_COORDINATES(i1,j1),ATOM_COORDINATES(i2,j2));
+                    // classify bond type if this atom pair gets chosen by any surface point later
+                    // we count after the surface loop below
+                    (void)pc;
+                }
+            }
 
-			// Enlarged overlap (OV) contact
-      			if(distance <= ((vdW_RADIUS(i1,j1)+vdW_RADIUS(i2,j2))*alpha)) {
-				overlapcounter[i1 + nresidues*i2] = 1;
-			}
+            // accumulate surface hits for this i1,j1
+            for(int k=0; k<fibb; k++) {
+                surface_str * s = surface + k;
+                int i2 = s->i;
+                int j2 = s->j;
+                if (i2 >= 0 && j2 >= 0) {
+                    int at1 = ATOMTYPE(i1,j1);
+                    int at2 = ATOMTYPE(i2,j2);
+                    if (at1>0 && at2>0) {
+                        PairCount *pc = cmap_get(&cmap, i1, i2);
+                        if (pc) {
+                            pc->cont += 1;
+                            int btype = BONDTYPE(at1,at2);
+                            if (btype <= 4) pc->stab += 1;
+                            if (btype == 5) pc->dest += 1;
+                        }
+                    }
+                }
+            }
 
-			// Contacts of Structural Units (CSU)
-			if (distance <= vdW_RADIUS(i1,j1)+vdW_RADIUS(i2,j2)+water_radius) {
-				// FIND I2 J2 CLOSEST TO A GIVEN POINT ON THE SURFACE
-				for (int k=0; k<fibb; k++) {
-				surface_str * s = surface + k;
-				if( dist(SURFACE_COORDINATES(k),ATOM_COORDINATES(i2,j2)) < vdW_RADIUS(i2,j2)+water_radius
-                                    && distance <= s->d) {	
-      					s->d = distance;
-      					s->i = i2;
-      					s->j = j2;
-				}}
-			}
+        } // j1
+    }     // i1
 
-		}}}}
-
-		// AREA OF SURFACE
-		//float sarea = vdW_RADIUS(i1,j1)*vdW_RADIUS(i1,j1)*M_PI*4/fibb;
-
-		for(int k=0; k<fibb; k++) {
-			surface_str * s = surface + k;
-			int i2 = s->i;
-			int j2 = s->j;
-			if( i2 >= 0 && j2 >= 0 ) {
-				int at1 = ATOMTYPE(i1,j1);
-				int at2 = ATOMTYPE(i2,j2);
-				// CHECK ONLY MAPPED ATOM
-				if ( at1>0 && at2>0 ) {
-					contactcounter[i1 + nresidues*i2] += 1;
-					//if ( i1 != i2 ) printA(i1,j1,i2,j2);
-					int btype = BONDTYPE(at1,at2);
-					//scmap[i1][i2][btype-1] += sarea;
-					// COUNT STABILIZING   BONDS
-					if(btype <= 4) stabilizercounter[i1 + nresidues*i2] += 1;
-					// COUNT DESTABILIZING BONDS
-					if(btype == 5) destabilizercounter[i1 + nresidues*i2] += 1;
-				}
-			}
-		}
-	}}
-
-	printf("\n"
+    // dump table header
+    printf("\n"
 "Residue-Residue Contacts\n"
 "\n"
 "ID       - atom identification\n"
@@ -324,62 +360,69 @@ int main (int argc,char **argv) {
 "rCSU     - net contact from rCSU\n"
 "Count    - number of contacts between residues\n"
 "MODEL    - model number\n"
-//"aSurf    - surface of attractive connections\n"
-//"rSurf    - surface of repulsive connections\n"
-//"nSurf    - surface of neutral connections\n"
 "\n"
 "      ID    I1  AA  C I(PDB)     I2  AA  C I(PDB)        DCA       CMs    rCSU   Count Model\n"
 "============================================================================================\n"
-//       
-);
-	int count = 0;
-	for(int i1=0;i1 < nresidues;i1++) {
-	for(int i2=0;i2 < nresidues;i2++) {
-		int over = overlapcounter[i1 + nresidues*i2];
-		int cont = contactcounter[i1 + nresidues*i2];
-		int stab = stabilizercounter[i1 + nresidues*i2];
-		int dest = destabilizercounter[i1 + nresidues*i2];
-		int ocsu = stab;
-		int rcsu = stab - dest;
-		int mdl1 = residues[i1].model;
-		int mdl2 = residues[i2].model;
-		//float sum = 0.0;
-		//for (int k=0;k<MAXBONDTYPE;k++) sum += scmap[i1][i2][k];
-		if (mdl1 == mdl2 && i1 != i2 && (over > 0 || cont > 0)) {
-			count++;
-			printf("R %6d ",count);
-			printf("%5d %4s %1s %4d",i1+1,residues[i1].name,residues[i1].chain,residues[i1].seq);
-                        printf("    ");
-			printf("%5d %4s %1s %4d",i2+1,residues[i2].name,residues[i2].chain,residues[i2].seq);
-			printf("     %8.4f     ",DISTANCE_C_ALPHA(i1,i2));
-			printf("%d %d %d %d",
-				over,
-				cont != 0 ? 1 : 0,
-				ocsu != 0 ? 1 : 0,
-				rcsu >  0 ? 1 : 0);
-			printf("%6d  %6d %4d\n",rcsu,cont,residues[i1].model);
-		}
-	}}
+    );
 
-	free(overlapcounter);
-	free(contactcounter);
-	free(stabilizercounter);
-	free(destabilizercounter);
-	free(pdb);
-	free(atomauxs);
-	free(residues);
-	free(surface);
+    // collect entries
+    size_t nitems = 0;
+    for (size_t i=0;i<cmap.cap;i++) if (cmap.a[i].key != EMPTY_KEY) nitems++;
+    typedef struct { int i1,i2; PairCount *pc; } RowRef;
+    RowRef *rows = (RowRef*)malloc(nitems * sizeof(RowRef));
+    size_t rpos=0;
+    for (size_t i=0;i<cmap.cap;i++){
+        if (cmap.a[i].key != EMPTY_KEY){
+            int i1 = (int)(cmap.a[i].key >> 32);
+            int i2 = (int)(cmap.a[i].key & 0xffffffffu);
+            rows[rpos++] = (RowRef){i1,i2,&cmap.a[i]};
+        }
+    }
+    // sort by i1 then i2 for stable output
+    int cmp_rowref(const void *a, const void *b){
+        const RowRef *ra = (const RowRef*)a, *rb = (const RowRef*)b;
+        if (ra->i1 != rb->i1) return (ra->i1 < rb->i1)? -1 : 1;
+        if (ra->i2 != rb->i2) return (ra->i2 < rb->i2)? -1 : 1;
+        return 0;
+    }
+    qsort(rows, nitems, sizeof(RowRef), cmp_rowref);
+
+    int count = 0;
+    for (size_t t=0; t<nitems; t++) {
+        int i1 = rows[t].i1;
+        int i2 = rows[t].i2;
+        PairCount *pc = rows[t].pc;
+
+        if (i1==i2) continue; // skip self
+        if (residues[i1].model != residues[i2].model) continue;
+
+        int over = pc->over;
+        int cont = pc->cont;
+        int stab = pc->stab;
+        int dest = pc->dest;
+        int ocsu = stab;
+        int rcsu = stab - dest;
+
+        if (over > 0 || cont > 0) {
+            count++;
+            printf("R %6d ",count);
+            printf("%5d %4s %s %4d",i1+1,residues[i1].name,residues[i1].chain,residues[i1].seq);
+            printf("    ");
+            printf("%5d %4s %s %4d",i2+1,residues[i2].name,residues[i2].chain,residues[i2].seq);
+            printf("     %8.4f     ",DISTANCE_C_ALPHA(i1,i2));
+            printf("%d %d %d %d", over, cont != 0 ? 1 : 0, ocsu != 0 ? 1 : 0, rcsu >  0 ? 1 : 0);
+            printf("%6d  %6d %4d\n", rcsu, cont, residues[i1].model);
+        }
+    }
+
+    // cleanup
+    free(rows);
+    cmap_free(&cmap);
+    free(pdb);
+    free(atomauxs);
+    free(residues);
+    free(surface);
+
+    return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
 

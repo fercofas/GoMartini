@@ -9,7 +9,7 @@
 // ALL ALPHABET RELATED TO PROTEINS
 typedef enum {
 	ALA=1,ARG,ASN,ASP,CYS,GLN,GLU,GLY,HIS,ILE,LEU,LYS,MET,PHE,PRO,SER,THR,TRP,TYR,VAL,
-	CYM,CYX,HID,HIE,HIP,
+	CYM,CYX,HID,HIE,HIP,HSD,HSP,HSE,ASH,GLH,
 	C,CA,CB,CD,CD1,CD2,CE,CE1,CE2,CE3,CG,CG1,CG2,CH2,CZ,CZ2,CZ3,
 	N,ND1,ND2,NE,NE1,NE2,NH1,NH2,NZ,
 	O,OD1,OD2,OE1,OE2,OG,OG1,OH,
@@ -24,9 +24,9 @@ typedef struct {
 
 static protein_str plt[] = {
 	{"ALA",ALA},{"ARG",ARG},{"ASN",ASN},{"ASP",ASP},{"CYS",CYS},{"GLN",GLN},{"GLU",GLU},
-	{"GLY",GLY},{"HIS",HIS},{"ILE",ILE},{"LEU",LEU},{"LYS",LYS},{"MET",MET},{"PHE",PHE},
+	{"GLY",GLY},{"HIS",HIS},{"HSE",HSE},{"HSD",HSD},{"HSP",HSP},{"ILE",ILE},{"LEU",LEU},{"LYS",LYS},{"MET",MET},{"PHE",PHE},
 	{"PRO",PRO},{"SER",SER},{"THR",THR},{"TRP",TRP},{"TYR",TYR},{"VAL",VAL},
-	{"CYM",CYM},{"CYX",CYX},{"HID",HID},{"HIE",HIE},{"HIP",HIP},
+	{"CYM",CYM},{"CYX",CYX},{"HID",HID},{"HIE",HIE},{"HIP",HIP},{"ASH",ASH},{"GLU",GLH},
 	{"C"  ,  C},{"CA" , CA},{"CB" , CB},{"CD" , CD},{"CD1",CD1},{"CD2",CD2},{"CE" , CE},
 	{"CE1",CE1},{"CE2",CE2},{"CE3",CE3},{"CG" , CG},{"CG1",CG1},{"CG2",CG2},{"CH2",CH2},
 	{"CZ" , CZ},{"CZ2",CZ2},{"CZ3",CZ3},
@@ -37,17 +37,16 @@ static protein_str plt[] = {
 	{"SD" , SD},{"SG" , SG}
 };
 
-static int keyfromstring(char key[]) {
-	int r = 0;
-	for (int k=0;k<sizeof(plt)/sizeof(protein_str);k++)
-		if ( (strlen(plt[k].key) == strlen(key)) && (strncmp(plt[k].key,key,strlen(key)) == 0) ) {
-			r=plt[k].val;
-			break;
-		}
-	//if (r<=0) {
-	//	printf("Key '%s' not found on protein map!\n",key);
-	//};
-	return r;
+static int keyfromstring(const char *key) {
+    int r = 0;
+    for (size_t k = 0; k < sizeof(plt)/sizeof(plt[0]); k++) {
+        if (strlen(plt[k].key) == strlen(key) &&
+            strncmp(plt[k].key, key, strlen(key)) == 0) {
+            r = plt[k].val;
+            break;
+        }
+    }
+    return r;
 }
 
 // THIS SUBROUTINE ASSIGNS VAN DER WAALS RADII
@@ -112,6 +111,19 @@ extern bool protein_map(atom_pdb_str *atom, atomaux_str *vdw) {
 				case OD2: vrad=1.42; atype=2; break;
 				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
 			} break;
+		case ASH:
+			vdw->nb=8;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.61; atype=6; break;
+				case OD1: vrad=1.46; atype=2; break;
+				case OD2: vrad=1.42; atype=2; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;			
 		case CYM:
 		case CYX:
 		case CYS:
@@ -153,6 +165,20 @@ extern bool protein_map(atom_pdb_str *atom, atomaux_str *vdw) {
 				case OE2: vrad=1.42; atype=2; break;
 				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
 			} break;
+		case GLH:
+			vdw->nb=9;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.88; atype=4; break;
+				case CD : vrad=1.61; atype=6; break;
+				case OE1: vrad=1.46; atype=2; break;
+				case OE2: vrad=1.42; atype=2; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;			
 		case GLY:
 			vdw->nb=4;
 			switch(keyfromstring(atom->name)) {
@@ -162,10 +188,98 @@ extern bool protein_map(atom_pdb_str *atom, atomaux_str *vdw) {
 				case O  : vrad=1.42; atype=2; break;
 				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
 			} break;
-		case HIE:
-		case HIP:
 		case HIS:
 			vdw->nb=10;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.61; atype=5; break;
+				case ND1: vrad=1.64; atype=1; break;
+				case CD2: vrad=1.76; atype=5; break;
+				case CE1: vrad=1.76; atype=5; break;
+				case NE2: vrad=1.64; atype=1; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;
+		case HSP:
+					vdw->nb=10;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.61; atype=5; break;
+				case ND1: vrad=1.64; atype=1; break;
+				case CD2: vrad=1.76; atype=5; break;
+				case CE1: vrad=1.76; atype=5; break;
+				case NE2: vrad=1.64; atype=1; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;
+		case HSE:
+					vdw->nb=10;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.61; atype=5; break;
+				case ND1: vrad=1.64; atype=1; break;
+				case CD2: vrad=1.76; atype=5; break;
+				case CE1: vrad=1.76; atype=5; break;
+				case NE2: vrad=1.64; atype=1; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;
+		case HID:
+					vdw->nb=10;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.61; atype=5; break;
+				case ND1: vrad=1.64; atype=1; break;
+				case CD2: vrad=1.76; atype=5; break;
+				case CE1: vrad=1.76; atype=5; break;
+				case NE2: vrad=1.64; atype=1; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;
+		case HSD:
+					vdw->nb=10;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.61; atype=5; break;
+				case ND1: vrad=1.64; atype=1; break;
+				case CD2: vrad=1.76; atype=5; break;
+				case CE1: vrad=1.76; atype=5; break;
+				case NE2: vrad=1.64; atype=1; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;
+		case HIE:
+					vdw->nb=10;
+			switch(keyfromstring(atom->name)) {
+				case N  : vrad=1.64; atype=3; break;
+				case CA : vrad=1.88; atype=7; break;
+				case C  : vrad=1.61; atype=6; break;
+				case O  : vrad=1.42; atype=2; break;
+				case CB : vrad=1.88; atype=4; break;
+				case CG : vrad=1.61; atype=5; break;
+				case ND1: vrad=1.64; atype=1; break;
+				case CD2: vrad=1.76; atype=5; break;
+				case CE1: vrad=1.76; atype=5; break;
+				case NE2: vrad=1.64; atype=1; break;
+				default : vrad=0.00; atype=0; printf("UNMAPPED ATOM %s %s\n",atom->resName,atom->name);
+			} break;
+		case HIP:
+					vdw->nb=10;
 			switch(keyfromstring(atom->name)) {
 				case N  : vrad=1.64; atype=3; break;
 				case CA : vrad=1.88; atype=7; break;

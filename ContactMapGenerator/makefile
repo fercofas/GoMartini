@@ -1,14 +1,25 @@
+# Portable makefile
+# Usage:
+#   make                # build
+#   make install        # symlink to ~/bin/contact_map
+#   make clean          # remove build artifacts
 
-HOME=/home/rodrigo/mycodes
-CC=clang -Wall
-CFLAGS=-march=native -O4
-LIBS=-lm
+# Compiler and flags (override from CLI if you want)
+CC      ?= gcc
+CFLAGS  ?= -Wall -O3 -march=native
+LDFLAGS ?=
+LDLIBS  ?= -lm
 
-DEPS = contact_map.h
-OBJ = chemical_map.o pdb_map.o protein_map.o contact_map.o
+# Install prefix
+PREFIX  ?= $(HOME)
+BINDIR  := $(PREFIX)/bin
+
+DEPS := contact_map.h
+OBJ = chemical_map.o pdb_map.o protein_map.o contact_map.o cif_map.o
+
 
 contact_map: $(OBJ)
-	$(CC) -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
@@ -16,9 +27,9 @@ contact_map: $(OBJ)
 .PHONY: clean install
 
 clean:
-	rm -f *.o
-	rm contact_map
-	rm $(HOME)/bin/contact_map
+	rm -f *.o contact_map
 
 install: contact_map
-	ln -s $(PWD)/contact_map $(HOME)/bin/contact_map
+	mkdir -p "$(BINDIR)"
+	ln -sf "$(CURDIR)/contact_map" "$(BINDIR)/contact_map"
+
